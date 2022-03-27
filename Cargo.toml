@@ -29,7 +29,7 @@ include       = [
 # For documentation of features see the `mio::features` module.
 [features]
 # By default Mio only provides a shell implementation.
-default = ["net", "os-poll"]
+default = []
 
 # Enables the `Poll` and `Registry` types.
 os-poll = []
@@ -72,6 +72,7 @@ targets = [
   "x86_64-unknown-linux-gnu",
   "x86_64-unknown-netbsd",
   "x86_64-unknown-openbsd",
+  "wasm32-wasi",
 ]
 
 [package.metadata.playground]
