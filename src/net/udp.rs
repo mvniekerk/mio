@@ -8,7 +8,9 @@
 //! [portability guidelines]: ../struct.Poll.html#portability
 
 use crate::io_source::IoSource;
-use crate::{event, sys, Interest, Registry, Token};
+use crate::{event, Interest, Registry, Token};
+#[cfg(not(target_os = "wasi"))]
+use crate::{sys};
 
 use std::fmt;
 use std::io;
@@ -16,6 +18,8 @@ use std::net;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(target_os = "wasi")]
+use wasm_bus_mio::prelude as wasm_bus_mio;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 
@@ -88,8 +92,12 @@ use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket}
 /// }
 /// # }
 /// ```
-pub struct UdpSocket {
-    inner: IoSource<net::UdpSocket>,
+pub enum UdpSocket {
+    /// Inner std UDP socket
+    Inner(IoSource<net::UdpSocket>),
+    /// WASM bus interface
+    #[cfg(target_os = "wasi")]
+    WasmBus(wasm_bus_mio::UdpSocket)
 }
 
 impl UdpSocket {
@@ -119,9 +127,13 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn bind(addr: SocketAddr) -> io::Result<UdpSocket> {
-        sys::udp::bind(addr).map(UdpSocket::from_std)
+        #[cfg(not(target_os = "wasi"))]
+        let ret = sys::udp::bind(addr).map(UdpSocket::from_std)?;
+        #[cfg(target_os = "wasi")]
+        let ret = UdpSocket::WasmBus(wasm_bus_mio::UdpSocket::bind(addr)?);
+        Ok(ret)
     }
-
+    
     /// Creates a new `UdpSocket` from a standard `net::UdpSocket`.
     ///
     /// This function is intended to be used to wrap a UDP socket from the
@@ -129,9 +141,7 @@ impl UdpSocket {
     /// about the underlying socket; it is left up to the user to set it in
     /// non-blocking mode.
     pub fn from_std(socket: net::UdpSocket) -> UdpSocket {
-        UdpSocket {
-            inner: IoSource::new(socket),
-        }
+        UdpSocket::Inner(IoSource::new(socket))
     }
 
     /// Returns the socket address that this socket was created from.
@@ -158,7 +168,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.inner.local_addr()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.local_addr()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.local_addr()
+            }
+        }
     }
 
     /// Returns the socket address of the remote peer this socket was connected to.
@@ -181,7 +199,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        self.inner.peer_addr()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.peer_addr()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.peer_addr()
+            }
+        }
     }
 
     /// Sends data on the socket to the given address. On success, returns the
@@ -209,7 +235,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn send_to(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
-        self.inner.do_io(|inner| inner.send_to(buf, target))
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|inner| inner.send_to(buf, target))
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.send_to(buf.to_vec(), target)
+            }
+        }
     }
 
     /// Receives data from the socket. On success, returns the number of bytes
@@ -244,7 +278,18 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        self.inner.do_io(|inner| inner.recv_from(buf))
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|inner| inner.recv_from(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                let (ret, addr) = bus.recv_from(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok((size, addr))
+            }
+        }
     }
 
     /// Receives data from the socket, without removing it from the input queue.
@@ -280,13 +325,32 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        self.inner.do_io(|inner| inner.peek_from(buf))
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|inner| inner.peek_from(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                let (ret, addr) = bus.peek_from(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok((size, addr))
+            }
+        }
     }
 
     /// Sends data on the socket to the address previously bound via connect(). On success,
     /// returns the number of bytes written.
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| inner.send(buf))
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|inner| inner.send(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.send(buf.to_vec())
+            }
+        }
     }
 
     /// Receives data from the socket previously bound with connect(). On success, returns
@@ -300,7 +364,18 @@ impl UdpSocket {
     /// Make sure to always use a sufficiently large buffer to hold the
     /// maximum UDP packet size, which can be up to 65536 bytes in size.
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| inner.recv(buf))
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|inner| inner.recv(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                let ret = bus.recv(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok(size)
+            }
+        }
     }
 
     /// Receives data from the socket, without removing it from the input queue.
@@ -314,14 +389,33 @@ impl UdpSocket {
     /// Make sure to always use a sufficiently large buffer to hold the
     /// maximum UDP packet size, which can be up to 65536 bytes in size.
     pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| inner.peek(buf))
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|inner| inner.peek(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                let ret = bus.peek(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok(size)
+            }
+        }
     }
 
     /// Connects the UDP socket setting the default destination for `send()`
     /// and limiting packets that are read via `recv` from the address specified
     /// in `addr`.
     pub fn connect(&self, addr: SocketAddr) -> io::Result<()> {
-        self.inner.connect(addr)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.connect(addr)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.connect(addr)
+            }
+        }
     }
 
     /// Sets the value of the `SO_BROADCAST` option for this socket.
@@ -349,7 +443,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn set_broadcast(&self, on: bool) -> io::Result<()> {
-        self.inner.set_broadcast(on)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.set_broadcast(on)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.set_broadcast(on)
+            }
+        }
     }
 
     /// Gets the value of the `SO_BROADCAST` option for this socket.
@@ -375,7 +477,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn broadcast(&self) -> io::Result<bool> {
-        self.inner.broadcast()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.broadcast()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.broadcast()
+            }
+        }
     }
 
     /// Sets the value of the `IP_MULTICAST_LOOP` option for this socket.
@@ -383,7 +493,15 @@ impl UdpSocket {
     /// If enabled, multicast packets will be looped back to the local socket.
     /// Note that this may not have any affect on IPv6 sockets.
     pub fn set_multicast_loop_v4(&self, on: bool) -> io::Result<()> {
-        self.inner.set_multicast_loop_v4(on)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.set_multicast_loop_v4(on)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.set_multicast_loop_v4(on)
+            }
+        }
     }
 
     /// Gets the value of the `IP_MULTICAST_LOOP` option for this socket.
@@ -393,7 +511,15 @@ impl UdpSocket {
     ///
     /// [link]: #method.set_multicast_loop_v4
     pub fn multicast_loop_v4(&self) -> io::Result<bool> {
-        self.inner.multicast_loop_v4()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.multicast_loop_v4()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.multicast_loop_v4()
+            }
+        }
     }
 
     /// Sets the value of the `IP_MULTICAST_TTL` option for this socket.
@@ -404,7 +530,15 @@ impl UdpSocket {
     ///
     /// Note that this may not have any affect on IPv6 sockets.
     pub fn set_multicast_ttl_v4(&self, ttl: u32) -> io::Result<()> {
-        self.inner.set_multicast_ttl_v4(ttl)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.set_multicast_ttl_v4(ttl)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.set_multicast_ttl_v4(ttl)
+            }
+        }
     }
 
     /// Gets the value of the `IP_MULTICAST_TTL` option for this socket.
@@ -414,7 +548,15 @@ impl UdpSocket {
     ///
     /// [link]: #method.set_multicast_ttl_v4
     pub fn multicast_ttl_v4(&self) -> io::Result<u32> {
-        self.inner.multicast_ttl_v4()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.multicast_ttl_v4()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.multicast_ttl_v4()
+            }
+        }
     }
 
     /// Sets the value of the `IPV6_MULTICAST_LOOP` option for this socket.
@@ -422,7 +564,15 @@ impl UdpSocket {
     /// Controls whether this socket sees the multicast packets it sends itself.
     /// Note that this may not have any affect on IPv4 sockets.
     pub fn set_multicast_loop_v6(&self, on: bool) -> io::Result<()> {
-        self.inner.set_multicast_loop_v6(on)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.set_multicast_loop_v6(on)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.set_multicast_loop_v6(on)
+            }
+        }
     }
 
     /// Gets the value of the `IPV6_MULTICAST_LOOP` option for this socket.
@@ -432,7 +582,15 @@ impl UdpSocket {
     ///
     /// [link]: #method.set_multicast_loop_v6
     pub fn multicast_loop_v6(&self) -> io::Result<bool> {
-        self.inner.multicast_loop_v6()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.multicast_loop_v6()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.multicast_loop_v6()
+            }
+        }
     }
 
     /// Sets the value for the `IP_TTL` option on this socket.
@@ -460,7 +618,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-        self.inner.set_ttl(ttl)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.set_ttl(ttl)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.set_ttl(ttl)
+            }
+        }
     }
 
     /// Gets the value of the `IP_TTL` option for this socket.
@@ -487,7 +653,15 @@ impl UdpSocket {
     /// # }
     /// ```
     pub fn ttl(&self) -> io::Result<u32> {
-        self.inner.ttl()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.ttl()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.ttl()
+            }
+        }
     }
 
     /// Executes an operation of the `IP_ADD_MEMBERSHIP` type.
@@ -499,7 +673,15 @@ impl UdpSocket {
     /// interface is chosen by the system.
     #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn join_multicast_v4(&self, multiaddr: &Ipv4Addr, interface: &Ipv4Addr) -> io::Result<()> {
-        self.inner.join_multicast_v4(multiaddr, interface)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.join_multicast_v4(multiaddr, interface)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.join_multicast_v4(multiaddr.clone(), interface.clone())
+            }
+        }
     }
 
     /// Executes an operation of the `IPV6_ADD_MEMBERSHIP` type.
@@ -509,7 +691,15 @@ impl UdpSocket {
     /// index of the interface to join/leave (or 0 to indicate any interface).
     #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn join_multicast_v6(&self, multiaddr: &Ipv6Addr, interface: u32) -> io::Result<()> {
-        self.inner.join_multicast_v6(multiaddr, interface)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.join_multicast_v6(multiaddr, interface)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.join_multicast_v6(multiaddr.clone(), interface)
+            }
+        }
     }
 
     /// Executes an operation of the `IP_DROP_MEMBERSHIP` type.
@@ -520,7 +710,15 @@ impl UdpSocket {
     /// [link]: #method.join_multicast_v4
     #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn leave_multicast_v4(&self, multiaddr: &Ipv4Addr, interface: &Ipv4Addr) -> io::Result<()> {
-        self.inner.leave_multicast_v4(multiaddr, interface)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.leave_multicast_v4(multiaddr, interface)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.leave_multicast_v4(multiaddr.clone(), interface.clone())
+            }
+        }
     }
 
     /// Executes an operation of the `IPV6_DROP_MEMBERSHIP` type.
@@ -531,13 +729,37 @@ impl UdpSocket {
     /// [link]: #method.join_multicast_v6
     #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn leave_multicast_v6(&self, multiaddr: &Ipv6Addr, interface: u32) -> io::Result<()> {
-        self.inner.leave_multicast_v6(multiaddr, interface)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.leave_multicast_v6(multiaddr, interface)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.leave_multicast_v6(multiaddr.clone(), interface)
+            }
+        }
     }
 
     /// Get the value of the `IPV6_V6ONLY` option on this socket.
+    #[cfg(not(target_os = "wasi"))]
     #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn only_v6(&self) -> io::Result<bool> {
-        sys::udp::only_v6(&self.inner)
+        match self {
+            UdpSocket::Inner(ref inner) => {                
+                sys::udp::only_v6(inner)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.only_v6()
+            }
+        }
+    }
+    
+    /// Get the value of the `IPV6_V6ONLY` option on this socket.
+    #[cfg(target_os = "wasi")]
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn only_v6(&self) -> io::Result<bool> {
+        Ok(false)
     }
 
     /// Get the value of the `SO_ERROR` option on this socket.
@@ -546,7 +768,15 @@ impl UdpSocket {
     /// the field in the process. This can be useful for checking errors between
     /// calls.
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        self.inner.take_error()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.take_error()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(ref bus) => {
+                bus.take_error()
+            }
+        }
     }
 
     /// Execute an I/O operation ensuring that the socket receives more events
@@ -604,7 +834,15 @@ impl UdpSocket {
     where
         F: FnOnce() -> io::Result<T>,
     {
-        self.inner.do_io(|_| f())
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.do_io(|_| f())
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                panic!("try_io is not supported for wasm_bus_mio");
+            }
+        }
     }
 }
 
@@ -615,7 +853,15 @@ impl event::Source for UdpSocket {
         token: Token,
         interests: Interest,
     ) -> io::Result<()> {
-        self.inner.register(registry, token, interests)
+        match self {
+            UdpSocket::Inner(inner) => {
+                inner.register(registry, token, interests)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 
     fn reregister(
@@ -624,31 +870,71 @@ impl event::Source for UdpSocket {
         token: Token,
         interests: Interest,
     ) -> io::Result<()> {
-        self.inner.reregister(registry, token, interests)
+        match self {
+            UdpSocket::Inner(inner) => {
+                inner.reregister(registry, token, interests)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 
     fn deregister(&mut self, registry: &Registry) -> io::Result<()> {
-        self.inner.deregister(registry)
+        match self {
+            UdpSocket::Inner(inner) => {
+                inner.deregister(registry)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 }
 
 impl fmt::Debug for UdpSocket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.fmt(f)
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                write!(f, "wasm-bus-mio::UdpSocket")
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 impl IntoRawFd for UdpSocket {
     fn into_raw_fd(self) -> RawFd {
-        self.inner.into_inner().into_raw_fd()
+        match self {
+            UdpSocket::Inner(inner) => {
+                inner.into_inner().into_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                panic!("WASM Bus UdpSockets can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 impl AsRawFd for UdpSocket {
     fn as_raw_fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.as_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            UdpSocket::WasmBus(_) => {
+                panic!("WASM Bus UdpSockets can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
@@ -668,14 +954,22 @@ impl FromRawFd for UdpSocket {
 #[cfg(windows)]
 impl IntoRawSocket for UdpSocket {
     fn into_raw_socket(self) -> RawSocket {
-        self.inner.into_inner().into_raw_socket()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.into_inner().into_raw_socket()
+            }
+        }
     }
 }
 
 #[cfg(windows)]
 impl AsRawSocket for UdpSocket {
     fn as_raw_socket(&self) -> RawSocket {
-        self.inner.as_raw_socket()
+        match self {
+            UdpSocket::Inner(ref inner) => {
+                inner.as_raw_socket()
+            }
+        }
     }
 }
 

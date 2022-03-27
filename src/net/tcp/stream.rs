@@ -5,6 +5,8 @@ use std::net::{self, Shutdown, SocketAddr};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(target_os = "wasi")]
 use std::os::wasi::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(target_os = "wasi")]
+use wasm_bus_mio::prelude as wasm_bus_mio;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 
@@ -45,8 +47,12 @@ use crate::{event, Interest, Registry, Token};
 /// #     Ok(())
 /// # }
 /// ```
-pub struct TcpStream {
-    inner: IoSource<net::TcpStream>,
+pub enum TcpStream {
+    /// Inner std TCP stream
+    Inner(IoSource<net::TcpStream>),
+    /// WASM bus interface
+    #[cfg(target_os = "wasi")]
+    WasmBus(wasm_bus_mio::TcpStream)
 }
 
 impl TcpStream {
@@ -76,14 +82,26 @@ impl TcpStream {
     ///  5. Now the stream can be used.
     ///
     /// [read interest]: Interest::READABLE
-    #[cfg(not(target_os = "wasi"))]
     pub fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
+        #[cfg(not(target_os = "wasi"))]
         let socket = new_for_addr(addr)?;
         #[cfg(unix)]
         let stream = unsafe { TcpStream::from_raw_fd(socket) };
         #[cfg(windows)]
         let stream = unsafe { TcpStream::from_raw_socket(socket as _) };
-        connect(&stream.inner, addr)?;
+        #[cfg(target_os = "wasi")]
+        let stream = TcpStream::WasmBus(wasm_bus_mio::TcpStream::connect(addr)?);
+
+        match stream {
+            #[allow(unused_variables)]
+            TcpStream::Inner(ref inner) => {
+                #[cfg(not(target_os = "wasi"))]
+                connect(inner, addr)?;
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+            }
+        }
         Ok(stream)
     }
 
@@ -100,19 +118,33 @@ impl TcpStream {
     /// should already be connected via some other means (be it manually, or
     /// the standard library).
     pub fn from_std(stream: net::TcpStream) -> TcpStream {
-        TcpStream {
-            inner: IoSource::new(stream),
-        }
+        TcpStream::Inner(IoSource::new(stream))
     }
 
     /// Returns the socket address of the remote peer of this TCP connection.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        self.inner.peer_addr()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.peer_addr()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.peer_addr()
+            }
+        }
     }
 
     /// Returns the socket address of the local half of this TCP connection.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.inner.local_addr()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.local_addr()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.local_addr()
+            }
+        }
     }
 
     /// Shuts down the read, write, or both halves of this connection.
@@ -121,7 +153,15 @@ impl TcpStream {
     /// portions to return immediately with an appropriate value (see the
     /// documentation of `Shutdown`).
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        self.inner.shutdown(how)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.shutdown(how)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.shutdown(how)
+            }
+        }
     }
 
     /// Sets the value of the `TCP_NODELAY` option on this socket.
@@ -138,7 +178,15 @@ impl TcpStream {
     /// by receiving an (writable) event. Trying to set `nodelay` on an
     /// unconnected `TcpStream` is unspecified behavior.
     pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
-        self.inner.set_nodelay(nodelay)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.set_nodelay(nodelay)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.set_nodelay(nodelay)
+            }
+        }
     }
 
     /// Gets the value of the `TCP_NODELAY` option on this socket.
@@ -153,7 +201,15 @@ impl TcpStream {
     /// by receiving an (writable) event. Trying to get `nodelay` on an
     /// unconnected `TcpStream` is unspecified behavior.
     pub fn nodelay(&self) -> io::Result<bool> {
-        self.inner.nodelay()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.nodelay()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.nodelay()
+            }
+        }
     }
 
     /// Sets the value for the `IP_TTL` option on this socket.
@@ -167,7 +223,15 @@ impl TcpStream {
     /// by receiving an (writable) event. Trying to set `ttl` on an
     /// unconnected `TcpStream` is unspecified behavior.
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-        self.inner.set_ttl(ttl)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.set_ttl(ttl)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.set_ttl(ttl)
+            }
+        }
     }
 
     /// Gets the value of the `IP_TTL` option for this socket.
@@ -182,7 +246,15 @@ impl TcpStream {
     ///
     /// [link]: #method.set_ttl
     pub fn ttl(&self) -> io::Result<u32> {
-        self.inner.ttl()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.ttl()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.ttl()
+            }
+        }
     }
 
     /// Get the value of the `SO_ERROR` option on this socket.
@@ -191,7 +263,15 @@ impl TcpStream {
     /// the field in the process. This can be useful for checking errors between
     /// calls.
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        self.inner.take_error()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.take_error()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.take_error()
+            }
+        }
     }
 
     /// Receives data on the socket from the remote address to which it is
@@ -201,7 +281,18 @@ impl TcpStream {
     /// Successive calls return the same data. This is accomplished by passing
     /// `MSG_PEEK` as a flag to the underlying recv system call.
     pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.peek(buf)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.peek(buf)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                let ret = bus.peek(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok(size)
+            }
+        }
     }
 
     /// Execute an I/O operation ensuring that the socket receives more events
@@ -259,55 +350,173 @@ impl TcpStream {
     where
         F: FnOnce() -> io::Result<T>,
     {
-        self.inner.do_io(|_| f())
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|_| f())
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("try_io is not supported for wasm_bus_mio");
+            }
+        }
     }
 }
 
 impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).read(buf))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).read(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(ref bus) => {
+                let ret = bus.read(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok(size)
+            }
+        }
     }
 
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).read_vectored(bufs))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).read_vectored(bufs))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                let mut total = 0;
+                for buf in bufs {
+                    let ret = bus.read(buf.len())?;
+                    let size = ret.len();
+                    buf[..size].copy_from_slice(&ret[..size]);
+                    total += size;
+                }
+                Ok(total)
+            }
+        }
     }
 }
 
 impl<'a> Read for &'a TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).read(buf))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).read(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(ref bus) => {
+                let ret = bus.read(buf.len())?;
+                let size = ret.len();
+                buf[..size].copy_from_slice(&ret[..size]);
+                Ok(size)
+            }
+        }
     }
 
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).read_vectored(bufs))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).read_vectored(bufs))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                let mut total = 0;
+                for buf in bufs {
+                    let ret = bus.read(buf.len())?;
+                    let size = ret.len();
+                    buf[..size].copy_from_slice(&ret[..size]);
+                    total += size;
+                }
+                Ok(total)
+            }
+        }
     }
 }
 
 impl Write for TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).write(buf))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).write(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.write(buf.to_vec())
+            }
+        }
     }
 
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).write_vectored(bufs))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).write_vectored(bufs))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                let mut total = 0;
+                for buf in bufs {
+                    let buf = buf.to_vec();
+                    total += bus.write(buf)?;
+                }
+                Ok(total)
+            }
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.inner.do_io(|inner| (&*inner).flush())
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).flush())
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.flush()
+            }
+        }
     }
 }
 
 impl<'a> Write for &'a TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).write(buf))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).write(buf))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.write(buf.to_vec())
+            }
+        }
     }
 
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        self.inner.do_io(|inner| (&*inner).write_vectored(bufs))
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).write_vectored(bufs))
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                let mut total = 0;
+                for buf in bufs {
+                    let buf = buf.to_vec();
+                    total += bus.write(buf)?;
+                }
+                Ok(total)
+            }
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.inner.do_io(|inner| (&*inner).flush())
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.do_io(|inner| (&*inner).flush())
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(bus) => {
+                bus.flush()
+            }
+        }
     }
 }
 
@@ -318,7 +527,15 @@ impl event::Source for TcpStream {
         token: Token,
         interests: Interest,
     ) -> io::Result<()> {
-        self.inner.register(registry, token, interests)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.register(registry, token, interests)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 
     fn reregister(
@@ -327,31 +544,71 @@ impl event::Source for TcpStream {
         token: Token,
         interests: Interest,
     ) -> io::Result<()> {
-        self.inner.reregister(registry, token, interests)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.reregister(registry, token, interests)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 
     fn deregister(&mut self, registry: &Registry) -> io::Result<()> {
-        self.inner.deregister(registry)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.deregister(registry)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 }
 
 impl fmt::Debug for TcpStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.fmt(f)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                write!(f, "wasm-bus-mio::TcpStream")
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 impl IntoRawFd for TcpStream {
     fn into_raw_fd(self) -> RawFd {
-        self.inner.into_inner().into_raw_fd()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.into_inner().into_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("WASM Bus TcpStreams can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 impl AsRawFd for TcpStream {
     fn as_raw_fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.as_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("WASM Bus TcpStreams can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
@@ -371,14 +628,30 @@ impl FromRawFd for TcpStream {
 #[cfg(windows)]
 impl IntoRawSocket for TcpStream {
     fn into_raw_socket(self) -> RawSocket {
-        self.inner.into_inner().into_raw_socket()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.into_inner().into_raw_socket()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("WASM Bus TcpStreams can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(windows)]
 impl AsRawSocket for TcpStream {
     fn as_raw_socket(&self) -> RawSocket {
-        self.inner.as_raw_socket()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.as_raw_socket()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("WASM Bus TcpStreams can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
@@ -398,14 +671,30 @@ impl FromRawSocket for TcpStream {
 #[cfg(target_os = "wasi")]
 impl IntoRawFd for TcpStream {
     fn into_raw_fd(self) -> RawFd {
-        self.inner.into_inner().into_raw_fd()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.into_inner().into_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("WASM Bus TcpStreams can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(target_os = "wasi")]
 impl AsRawFd for TcpStream {
     fn as_raw_fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        match self {
+            TcpStream::Inner(inner) => {
+                inner.as_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpStream::WasmBus(_) => {
+                panic!("WASM Bus TcpStreams can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 

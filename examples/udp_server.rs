@@ -7,7 +7,6 @@ use std::io;
 // A token to allow us to identify which event is for the `UdpSocket`.
 const UDP_SOCKET: Token = Token(0);
 
-#[cfg(not(target_os = "wasi"))]
 fn main() -> io::Result<()> {
     use mio::net::UdpSocket;
 
@@ -77,9 +76,4 @@ fn main() -> io::Result<()> {
             }
         }
     }
-}
-
-#[cfg(target_os = "wasi")]
-fn main() {
-    panic!("can't bind to an address with wasi")
 }

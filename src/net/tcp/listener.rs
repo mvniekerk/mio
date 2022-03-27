@@ -3,6 +3,8 @@ use std::net::{self, SocketAddr};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(target_os = "wasi")]
 use std::os::wasi::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(target_os = "wasi")]
+use wasm_bus_mio::prelude as wasm_bus_mio;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::{fmt, io};
@@ -41,8 +43,12 @@ use crate::{event, sys, Interest, Registry, Token};
 /// #     Ok(())
 /// # }
 /// ```
-pub struct TcpListener {
-    inner: IoSource<net::TcpListener>,
+pub enum TcpListener {
+    /// Inner std TCP listener
+    Inner(IoSource<net::TcpListener>),
+    /// WASM bus interface
+    #[cfg(target_os = "wasi")]
+    WasmBus(wasm_bus_mio::TcpListener),
 }
 
 impl TcpListener {
@@ -55,26 +61,39 @@ impl TcpListener {
     /// 2. Set the `SO_REUSEADDR` option on the socket on Unix.
     /// 3. Bind the socket to the specified address.
     /// 4. Calls `listen` on the socket to prepare it to receive new connections.
-    #[cfg(not(target_os = "wasi"))]
     pub fn bind(addr: SocketAddr) -> io::Result<TcpListener> {
+        #[cfg(any(unix))]
         let socket = new_for_addr(addr)?;
         #[cfg(unix)]
         let listener = unsafe { TcpListener::from_raw_fd(socket) };
         #[cfg(windows)]
         let listener = unsafe { TcpListener::from_raw_socket(socket as _) };
+        #[cfg(target_os = "wasi")]
+        let listener = TcpListener::WasmBus(wasm_bus_mio::TcpListener::bind(addr)?);
 
-        // On platforms with Berkeley-derived sockets, this allows to quickly
-        // rebind a socket, without needing to wait for the OS to clean up the
-        // previous one.
-        //
-        // On Windows, this allows rebinding sockets which are actively in use,
-        // which allows “socket hijacking”, so we explicitly don't set it here.
-        // https://docs.microsoft.com/en-us/windows/win32/winsock/using-so-reuseaddr-and-so-exclusiveaddruse
-        #[cfg(not(windows))]
-        set_reuseaddr(&listener.inner, true)?;
+        match listener {
+            #[allow(unused_variables)]
+            TcpListener::Inner(ref inner) => {
+                // On platforms with Berkeley-derived sockets, this allows to quickly
+                // rebind a socket, without needing to wait for the OS to clean up the
+                // previous one.
+                //
+                // On Windows, this allows rebinding sockets which are actively in use,
+                // which allows “socket hijacking”, so we explicitly don't set it here.
+                // https://docs.microsoft.com/en-us/windows/win32/winsock/using-so-reuseaddr-and-so-exclusiveaddruse
+                #[cfg(all(not(windows), not(target_os = "wasi")))]
+                set_reuseaddr(inner, true)?;
 
-        bind(&listener.inner, addr)?;
-        listen(&listener.inner, 1024)?;
+                #[cfg(not(target_os = "wasi"))]
+                bind(inner, addr)?;
+                #[cfg(not(target_os = "wasi"))]
+                listen(inner, 1024)?;
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(ref bus) => {
+                bus.listen(1024)?;
+            }
+        }
         Ok(listener)
     }
 
@@ -85,9 +104,7 @@ impl TcpListener {
     /// about the underlying listener; ; it is left up to the user to set it
     /// in non-blocking mode.
     pub fn from_std(listener: net::TcpListener) -> TcpListener {
-        TcpListener {
-            inner: IoSource::new(listener),
-        }
+        TcpListener::Inner(IoSource::new(listener))
     }
 
     /// Accepts a new `TcpStream`.
@@ -99,14 +116,35 @@ impl TcpListener {
     /// If an accepted stream is returned, the remote address of the peer is
     /// returned along with it.
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        self.inner.do_io(|inner| {
-            sys::tcp::accept(inner).map(|(stream, addr)| (TcpStream::from_std(stream), addr))
-        })
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.do_io(|inner| {
+                    sys::tcp::accept(inner).map(|(stream, addr)| (TcpStream::from_std(stream), addr))
+                })
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(bus) => {
+                let stream = bus.accept()?;
+                let addr = stream.peer_addr()?;
+                let fd = stream.as_raw_fd()?;
+                unsafe {
+                    Ok((TcpStream::from_std(FromRawFd::from_raw_fd(fd)), addr))
+                }
+            }
+        }
     }
 
     /// Returns the local socket address of this listener.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.inner.local_addr()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.local_addr()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(bus) => {
+                bus.local_addr()
+            }
+        }
     }
 
     /// Sets the value for the `IP_TTL` option on this socket.
@@ -114,7 +152,15 @@ impl TcpListener {
     /// This value sets the time-to-live field that is used in every packet sent
     /// from this socket.
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-        self.inner.set_ttl(ttl)
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.set_ttl(ttl)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(bus) => {
+                bus.set_ttl(ttl)
+            }
+        }
     }
 
     /// Gets the value of the `IP_TTL` option for this socket.
@@ -123,7 +169,15 @@ impl TcpListener {
     ///
     /// [link]: #method.set_ttl
     pub fn ttl(&self) -> io::Result<u32> {
-        self.inner.ttl()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.ttl()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(bus) => {
+                bus.ttl()
+            }
+        }
     }
 
     /// Get the value of the `SO_ERROR` option on this socket.
@@ -132,7 +186,15 @@ impl TcpListener {
     /// the field in the process. This can be useful for checking errors between
     /// calls.
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        self.inner.take_error()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.take_error()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(bus) => {
+                bus.take_error()
+            }
+        }
     }
 }
 
@@ -143,7 +205,15 @@ impl event::Source for TcpListener {
         token: Token,
         interests: Interest,
     ) -> io::Result<()> {
-        self.inner.register(registry, token, interests)
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.register(registry, token, interests)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 
     fn reregister(
@@ -152,31 +222,71 @@ impl event::Source for TcpListener {
         token: Token,
         interests: Interest,
     ) -> io::Result<()> {
-        self.inner.reregister(registry, token, interests)
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.reregister(registry, token, interests)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 
     fn deregister(&mut self, registry: &Registry) -> io::Result<()> {
-        self.inner.deregister(registry)
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.deregister(registry)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                Ok(())
+            }
+        }
     }
 }
 
 impl fmt::Debug for TcpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.inner.fmt(f)
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.fmt(f)
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                write!(f, "wasm-bus-mio::TcpListener")
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 impl IntoRawFd for TcpListener {
     fn into_raw_fd(self) -> RawFd {
-        self.inner.into_inner().into_raw_fd()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.into_inner().into_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                panic!("WASM Bus Listeners can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(unix)]
 impl AsRawFd for TcpListener {
     fn as_raw_fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.as_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                panic!("WASM Bus Listeners can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
@@ -196,14 +306,30 @@ impl FromRawFd for TcpListener {
 #[cfg(windows)]
 impl IntoRawSocket for TcpListener {
     fn into_raw_socket(self) -> RawSocket {
-        self.inner.into_inner().into_raw_socket()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.into_inner().into_raw_socket()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                panic!("WASM Bus Listeners can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(windows)]
 impl AsRawSocket for TcpListener {
     fn as_raw_socket(&self) -> RawSocket {
-        self.inner.as_raw_socket()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.as_raw_socket()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                panic!("WASM Bus Listeners can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
@@ -223,14 +349,30 @@ impl FromRawSocket for TcpListener {
 #[cfg(target_os = "wasi")]
 impl IntoRawFd for TcpListener {
     fn into_raw_fd(self) -> RawFd {
-        self.inner.into_inner().into_raw_fd()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.into_inner().into_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                panic!("WASM Bus Listeners can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
 #[cfg(target_os = "wasi")]
 impl AsRawFd for TcpListener {
     fn as_raw_fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        match self {
+            TcpListener::Inner(inner) => {
+                inner.as_raw_fd()
+            }
+            #[cfg(target_os = "wasi")]
+            TcpListener::WasmBus(_) => {
+                panic!("WASM Bus Listeners can not be converted to raw file descriptors")
+            }
+        }
     }
 }
 
