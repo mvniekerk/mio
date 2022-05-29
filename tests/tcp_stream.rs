@@ -543,7 +543,7 @@ fn tcp_shutdown_client_read_close_event() {
 #[test]
 #[cfg_attr(windows, ignore = "fails; client write_closed events are not found")]
 #[cfg_attr(
-    any(target_os = "android", target_os = "illumos", target_os = "linux"),
+    any(target_os = "android", target_os = "illumos", target_os = "linux", target_os = "wasi"),
     ignore = "fails; client write_closed events are not found"
 )]
 fn tcp_shutdown_client_write_close_event() {

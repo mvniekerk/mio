@@ -42,11 +42,8 @@ os-ext = [
 # Enables `mio::net` module containing networking primitives.
 net = []
 
-[dependencies]
-log = "0.4.8"
-
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.121"
+libc = { git = "https://github.com/wasix-org/libc.git" }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.36"
@@ -58,9 +55,17 @@ features = [
   "Win32_System_WindowsProgramming",  # General future used for various types/funcs
 ]
 
+[target.'cfg(all(target_os = "wasi", target_vendor = "unknown"))'.dependencies]
+wasi = { version = "^0.11" }
+
+[target.'cfg(all(target_os = "wasi", target_vendor = "wasmer"))'.dependencies]
+wasix = { version = "0.12" }
+
 [target.'cfg(target_os = "wasi")'.dependencies]
-wasi = "0.11.0"
-libc = "0.2.121"
+libc = { git = "https://github.com/wasix-org/libc.git" }
+
+[dependencies]
+log = "0.4"
 
 [dev-dependencies]
 env_logger = { version = "0.8.4", default-features = false }

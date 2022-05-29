@@ -9,7 +9,7 @@ use std::os::wasi::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 
 use crate::io_source::IoSource;
-#[cfg(not(target_os = "wasi"))]
+#[cfg(not(all(target_os = "wasi", target_vendor = "unknown")))]
 use crate::sys::tcp::{connect, new_for_addr};
 use crate::{event, Interest, Registry, Token};
 
@@ -80,10 +80,12 @@ impl TcpStream {
     /// entries in the routing cache.
     ///
     /// [write interest]: Interest::WRITABLE
-    #[cfg(not(target_os = "wasi"))]
+    #[cfg(not(all(target_os = "wasi", target_vendor = "unknown")))]
     pub fn connect(addr: SocketAddr) -> io::Result<TcpStream> {
         let socket = new_for_addr(addr)?;
         #[cfg(unix)]
+        let stream = unsafe { TcpStream::from_raw_fd(socket) };
+        #[cfg(target_os = "wasi")]
         let stream = unsafe { TcpStream::from_raw_fd(socket) };
         #[cfg(windows)]
         let stream = unsafe { TcpStream::from_raw_socket(socket as _) };
