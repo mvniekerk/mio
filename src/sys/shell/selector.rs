@@ -19,7 +19,7 @@ impl Selector {
         os_required!();
     }
 
-    #[cfg(all(debug_assertions, not(target_os = "wasi")))]
+    #[cfg(all(debug_assertions))]
     pub fn register_waker(&self) -> bool {
         os_required!();
     }
