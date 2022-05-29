@@ -73,12 +73,21 @@ cfg_not_os_poll! {
     mod shell;
     pub(crate) use self::shell::*;
 
+    #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
+    cfg_any_os_ext! {
+        mod wasi;
+        pub use self::wasi::SourceFd;
+    }
+    #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
+    cfg_net! {
+        pub use self::wasi::SocketAddr;
+    }
+
     #[cfg(unix)]
     cfg_any_os_ext! {
         mod unix;
         pub use self::unix::SourceFd;
     }
-
     #[cfg(unix)]
     cfg_net! {
         pub use self::unix::SocketAddr;

@@ -15,14 +15,18 @@
 
 use std::cmp::min;
 use std::io;
+use std::fmt;
 #[cfg(all(feature = "net", debug_assertions))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(target_vendor = "wasmer")]
+use ::wasix as wasi;
 
-#[cfg(feature = "net")]
+#[cfg(all(feature = "net", target_vendor = "unknown"))]
 use crate::{Interest, Token};
 
+#[cfg(target_vendor = "unknown")]
 cfg_net! {
     pub(crate) mod tcp {
         use std::io;
@@ -36,32 +40,74 @@ cfg_net! {
     }
 }
 
+#[cfg(target_vendor = "wasmer")]
+cfg_os_poll! {
+    #[cfg(feature = "net")]
+    use crate::{Interest, Token};
+
+    pub(crate) mod sourcefd;
+    pub use self::sourcefd::SourceFd;
+    
+    pub(crate) mod waker;
+    pub(crate) use self::waker::Waker;
+
+    cfg_net! {
+        mod net;
+        pub(crate) mod tcp;
+        pub(crate) mod udp;
+        pub(crate) mod pipe;
+    }
+}
+
 /// Unique id for use as `SelectorId`.
 #[cfg(all(debug_assertions, feature = "net"))]
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
-pub(crate) struct Selector {
+pub struct Selector {
     #[cfg(all(debug_assertions, feature = "net"))]
     id: usize,
     /// Subscriptions (reads events) we're interested in.
     subscriptions: Arc<Mutex<Vec<wasi::Subscription>>>,
+    #[cfg(debug_assertions)]
+    has_waker: AtomicBool,
+}
+
+impl fmt::Debug
+for Selector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "selector")
+    }
 }
 
 impl Selector {
-    pub(crate) fn new() -> io::Result<Selector> {
+    pub fn new() -> io::Result<Selector> {
         Ok(Selector {
             #[cfg(all(debug_assertions, feature = "net"))]
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            subscriptions: Arc::new(Mutex::new(Vec::new())),
+            subscriptions: Arc::new(Mutex::new(Vec::new())),            
+            #[cfg(debug_assertions)]
+            has_waker: AtomicBool::new(false),
         })
     }
 
+    pub fn try_clone(&self) -> io::Result<Selector> {
+        Ok(
+            Selector {
+                #[cfg(all(debug_assertions, feature = "net"))]
+                id: self.id,
+                subscriptions: Arc::clone(&self.subscriptions),
+                #[cfg(debug_assertions)]
+                has_waker: AtomicBool::new(self.has_waker.load(Ordering::Acquire)),
+            }
+        )
+    }
+
     #[cfg(all(debug_assertions, feature = "net"))]
-    pub(crate) fn id(&self) -> usize {
+    pub fn id(&self) -> usize {
         self.id
     }
 
-    pub(crate) fn select(&self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
+    pub fn select(&self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
         events.clear();
 
         let mut subscriptions = self.subscriptions.lock().unwrap();
@@ -111,7 +157,7 @@ impl Selector {
     }
 
     #[cfg(feature = "net")]
-    pub(crate) fn register(
+    pub fn register(
         &self,
         fd: wasi::Fd,
         token: Token,
@@ -153,7 +199,7 @@ impl Selector {
     }
 
     #[cfg(feature = "net")]
-    pub(crate) fn reregister(
+    pub fn reregister(
         &self,
         fd: wasi::Fd,
         token: Token,
@@ -164,7 +210,7 @@ impl Selector {
     }
 
     #[cfg(feature = "net")]
-    pub(crate) fn deregister(&self, fd: wasi::Fd) -> io::Result<()> {
+    pub fn deregister(&self, fd: wasi::Fd) -> io::Result<()> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
 
         let predicate = |subscription: &wasi::Subscription| {
@@ -189,6 +235,11 @@ impl Selector {
         }
 
         ret
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn register_waker(&self) -> bool {
+        self.has_waker.swap(true, Ordering::AcqRel)
     }
 }
 
@@ -245,6 +296,8 @@ pub(crate) type Event = wasi::Event;
 
 pub(crate) mod event {
     use std::fmt;
+    #[cfg(target_vendor = "wasmer")]
+    use ::wasix as wasi;
 
     use crate::sys::Event;
     use crate::Token;
