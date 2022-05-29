@@ -40,6 +40,10 @@
 //!
 //! The available features are described in the [`features`] module.
 
+// WASIX requires os-poll when using the feature net
+#[cfg(all(target_os = "wasi", target_vendor = "wasmer", feature = "net", not(feature = "os-poll")))]
+compile_error!("WASIX requires os-poll when using the feature net");
+
 // macros used internally
 #[macro_use]
 mod macros;
@@ -48,8 +52,10 @@ mod interest;
 mod poll;
 mod sys;
 mod token;
-#[cfg(not(target_os = "wasi"))]
-mod waker;
+
+cfg_os_poll! {
+    mod waker;
+}
 
 pub mod event;
 
@@ -66,8 +72,17 @@ pub use event::Events;
 pub use interest::Interest;
 pub use poll::{Poll, Registry};
 pub use token::Token;
-#[cfg(not(target_os = "wasi"))]
-pub use waker::Waker;
+
+mod wasi {
+    #[cfg(all(target_os = "wasi", target_vendor = "unknown"))]
+    pub use ::wasi::*;
+    #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
+    pub use ::wasix::*;
+}
+
+cfg_os_poll! {
+    pub use waker::Waker;
+}
 
 #[cfg(all(unix, feature = "os-ext"))]
 #[cfg_attr(docsrs, doc(cfg(all(unix, feature = "os-ext"))))]

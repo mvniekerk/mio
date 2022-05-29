@@ -9,6 +9,7 @@ pub(crate) use self::selector::{event, Event, Events, Selector};
 
 #[cfg(not(target_os = "wasi"))]
 mod waker;
+#[allow(unused_imports)]
 #[cfg(not(target_os = "wasi"))]
 pub(crate) use self::waker::Waker;
 
