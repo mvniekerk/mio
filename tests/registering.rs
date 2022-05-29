@@ -37,7 +37,7 @@ impl TestHandler {
     fn handle_read(&mut self, registry: &Registry, token: Token) {
         match token {
             SERVER => {
-                trace!("handle_read; token=SERVER");
+                log::trace!("handle_read; token=SERVER");
                 let mut sock = self.server.accept().unwrap().0;
                 if let Err(err) = sock.write(b"foobar") {
                     if err.kind() != io::ErrorKind::WouldBlock {
@@ -46,7 +46,7 @@ impl TestHandler {
                 }
             }
             CLIENT => {
-                trace!("handle_read; token=CLIENT");
+                log::trace!("handle_read; token=CLIENT");
                 assert!(self.state == 0, "unexpected state {}", self.state);
                 self.state = 1;
                 registry
