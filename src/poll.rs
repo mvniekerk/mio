@@ -654,7 +654,7 @@ impl Registry {
 
     /// Get access to the `sys::Selector`.
     #[allow(dead_code)]
-    #[cfg(any(not(target_os = "wasi"), feature = "net"))]
+    #[cfg(any(not(target_os = "wasi"), feature = "net", feature = "os-poll"))]
     pub fn selector(&self) -> &sys::Selector {
         &self.selector
     }

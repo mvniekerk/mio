@@ -16,8 +16,6 @@
 use std::cmp::min;
 use std::io;
 use std::fmt;
-#[cfg(all(feature = "net", debug_assertions))]
-use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(target_vendor = "wasmer")]
@@ -42,9 +40,6 @@ cfg_net! {
 
 #[cfg(target_vendor = "wasmer")]
 cfg_os_poll! {
-    #[cfg(feature = "net")]
-    use crate::{Interest, Token};
-
     pub(crate) mod sourcefd;
     pub use self::sourcefd::SourceFd;
     
@@ -61,7 +56,7 @@ cfg_os_poll! {
 
 /// Unique id for use as `SelectorId`.
 #[cfg(all(debug_assertions, feature = "net"))]
-static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 pub struct Selector {
     #[cfg(all(debug_assertions, feature = "net"))]
@@ -69,7 +64,7 @@ pub struct Selector {
     /// Subscriptions (reads events) we're interested in.
     subscriptions: Arc<Mutex<Vec<wasi::Subscription>>>,
     #[cfg(debug_assertions)]
-    has_waker: AtomicBool,
+    has_waker: std::sync::atomic::AtomicBool,
 }
 
 impl fmt::Debug
@@ -83,10 +78,10 @@ impl Selector {
     pub fn new() -> io::Result<Selector> {
         Ok(Selector {
             #[cfg(all(debug_assertions, feature = "net"))]
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             subscriptions: Arc::new(Mutex::new(Vec::new())),            
             #[cfg(debug_assertions)]
-            has_waker: AtomicBool::new(false),
+            has_waker: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -97,7 +92,8 @@ impl Selector {
                 id: self.id,
                 subscriptions: Arc::clone(&self.subscriptions),
                 #[cfg(debug_assertions)]
-                has_waker: AtomicBool::new(self.has_waker.load(Ordering::Acquire)),
+                has_waker: std::sync::atomic::AtomicBool::new(self.has_waker.load(
+                    std::sync::atomic::Ordering::Acquire)),
             }
         )
     }
@@ -156,12 +152,12 @@ impl Selector {
         }
     }
 
-    #[cfg(feature = "net")]
+    #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn register(
         &self,
         fd: wasi::Fd,
-        token: Token,
-        interests: Interest,
+        token: crate::Token,
+        interests: crate::Interest,
     ) -> io::Result<()> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
 
@@ -198,18 +194,18 @@ impl Selector {
         Ok(())
     }
 
-    #[cfg(feature = "net")]
+    #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn reregister(
         &self,
         fd: wasi::Fd,
-        token: Token,
-        interests: Interest,
+        token: crate::Token,
+        interests: crate::Interest,
     ) -> io::Result<()> {
         self.deregister(fd)
             .and_then(|()| self.register(fd, token, interests))
     }
 
-    #[cfg(feature = "net")]
+    #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn deregister(&self, fd: wasi::Fd) -> io::Result<()> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
 
@@ -239,7 +235,7 @@ impl Selector {
 
     #[cfg(debug_assertions)]
     pub fn register_waker(&self) -> bool {
-        self.has_waker.swap(true, Ordering::AcqRel)
+        self.has_waker.swap(true, std::sync::atomic::Ordering::AcqRel)
     }
 }
 

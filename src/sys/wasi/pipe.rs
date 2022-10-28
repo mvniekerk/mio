@@ -15,6 +15,13 @@ use crate::{event, Interest, Registry, Token};
 /// Create a new non-blocking WASI pipe.
 ///
 pub fn new() -> io::Result<(Sender, Receiver)> {
+    #[cfg(target_vendor = "wasmer")]
+    let (fd1, fd2) = unsafe {
+        wasi::fd_pipe()
+            .map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
+    };
+
+    #[cfg(not(target_vendor = "wasmer"))]
     let (fd1, fd2) = unsafe {
         wasi::pipe()
             .map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
