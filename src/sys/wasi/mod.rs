@@ -21,6 +21,11 @@ use std::time::Duration;
 #[cfg(target_vendor = "wasmer")]
 use ::wasix as wasi;
 
+use std::fs::File;
+use std::os::wasi::io::FromRawFd;
+use std::convert::TryInto;
+use std::io::Write;
+
 #[cfg(all(feature = "net", target_vendor = "unknown"))]
 use crate::{Interest, Token};
 
@@ -65,6 +70,10 @@ pub struct Selector {
     subscriptions: Arc<Mutex<Vec<wasi::Subscription>>>,
     #[cfg(debug_assertions)]
     has_waker: std::sync::atomic::AtomicBool,
+    /// This file is used to wake up the poll selector
+    /// and stall it while management actions are taken
+    /// (like adding new subscriptions)
+    stall: Arc<Mutex<File>>,
 }
 
 impl fmt::Debug
@@ -76,12 +85,43 @@ for Selector {
 
 impl Selector {
     pub fn new() -> io::Result<Selector> {
+        let fd = unsafe {
+            wasi::fd_event(0, 0)
+                .map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
+        };
+        let fdstat = unsafe {
+            wasi::fd_fdstat_get(fd)
+                .map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
+        };
+    
+        let mut flags = fdstat.fs_flags;
+        flags |= wasi::FDFLAGS_NONBLOCK;
+        unsafe {
+            wasi::fd_fdstat_set_flags(fd, flags)
+                .map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
+        }
+        let file = unsafe { File::from_raw_fd(fd.try_into().unwrap()) };
+
+        let subscriptions = vec![
+            wasi::Subscription {
+                userdata: u64::MAX,
+                u: wasi::SubscriptionU {
+                    tag: wasi::EVENTTYPE_FD_READ.raw(),
+                    u: wasi::SubscriptionUU {
+                        fd_read: wasi::SubscriptionFdReadwrite {
+                            file_descriptor: fd,
+                        },
+                    },
+                },
+            }
+        ];
         Ok(Selector {
             #[cfg(all(debug_assertions, feature = "net"))]
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            subscriptions: Arc::new(Mutex::new(Vec::new())),            
+            subscriptions: Arc::new(Mutex::new(subscriptions)),
             #[cfg(debug_assertions)]
             has_waker: std::sync::atomic::AtomicBool::new(false),
+            stall: Arc::new(Mutex::new(file)),
         })
     }
 
@@ -94,6 +134,7 @@ impl Selector {
                 #[cfg(debug_assertions)]
                 has_waker: std::sync::atomic::AtomicBool::new(self.has_waker.load(
                     std::sync::atomic::Ordering::Acquire)),
+                stall: self.stall.clone(),
             }
         )
     }
@@ -106,50 +147,82 @@ impl Selector {
     pub fn select(&self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
         events.clear();
 
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        loop
+        {
+            {
+                let stall = self.stall.lock().unwrap();
+                drop(stall);
+            }
 
-        // If we want to a use a timeout in the `wasi_poll_oneoff()` function
-        // we need another subscription to the list.
-        if let Some(timeout) = timeout {
-            subscriptions.push(timeout_subscription(timeout));
-        }
+            let mut subscriptions = self.subscriptions.lock().unwrap();
 
-        // `poll_oneoff` needs the same number of events as subscriptions.
-        let length = subscriptions.len();
-        events.reserve(length);
+            // If we want to a use a timeout in the `wasi_poll_oneoff()` function
+            // we need another subscription to the list.
+            if let Some(timeout) = timeout {
+                subscriptions.push(timeout_subscription(timeout));
+            }
 
-        debug_assert!(events.capacity() >= length);
+            // `poll_oneoff` needs the same number of events as subscriptions.
+            let length = subscriptions.len();
+            events.reserve(length);
 
-        let res = unsafe { wasi::poll_oneoff(subscriptions.as_ptr(), events.as_mut_ptr(), length) };
+            debug_assert!(events.capacity() >= length);
 
-        // Remove the timeout subscription we possibly added above.
-        if timeout.is_some() {
-            let timeout_sub = subscriptions.pop();
-            debug_assert_eq!(
-                timeout_sub.unwrap().u.tag,
-                wasi::EVENTTYPE_CLOCK.raw(),
-                "failed to remove timeout subscription"
-            );
-        }
+            let res = unsafe { wasi::poll_oneoff(subscriptions.as_ptr(), events.as_mut_ptr(), length) };
 
-        drop(subscriptions); // Unlock.
-
-        match res {
-            Ok(n_events) => {
-                // Safety: `poll_oneoff` initialises the `events` for us.
-                unsafe { events.set_len(n_events) };
-
-                // Remove the timeout event.
-                if timeout.is_some() {
-                    if let Some(index) = events.iter().position(is_timeout_event) {
-                        events.swap_remove(index);
+            // If this is a stall event
+            if let Ok(n_events) = res {
+                if n_events == 1 {
+                    unsafe { events.set_len(1) };
+                    let evt = events[0];
+                    if evt.userdata == u64::MAX {
+                        // We release the lock and allow any stalled events to add new subscriptions
+                        // (without triggering the poll itself)
+                        continue;
                     }
                 }
-
-                check_errors(&events)
             }
-            Err(err) => Err(io_err(err)),
+
+            // Remove the timeout subscription we possibly added above.
+            if timeout.is_some() {
+                let timeout_sub = subscriptions.pop();
+                debug_assert_eq!(
+                    timeout_sub.unwrap().u.tag,
+                    wasi::EVENTTYPE_CLOCK.raw(),
+                    "failed to remove timeout subscription"
+                );
+            }
+
+            drop(subscriptions); // Unlock.
+
+            return match res {
+                Ok(n_events) => {
+                    // Safety: `poll_oneoff` initialises the `events` for us.
+                    unsafe { events.set_len(n_events) };
+
+                    // Remove the timeout event.
+                    if timeout.is_some() {
+                        if let Some(index) = events.iter().position(is_timeout_event) {
+                            events.swap_remove(index);
+                        }
+                    }
+
+                    check_errors(&events)
+                }
+                Err(err) => Err(io_err(err)),
+            };
         }
+    }
+
+    fn stall<'a>(&'a self) -> io::Result<std::sync::MutexGuard<'a, File>> {
+        // we stall the select and wake it up so that it can process
+        // the new subscriptions
+        let mut stall = self.stall.lock().unwrap();
+
+        let buf: [u8; 8] = 1u64.to_ne_bytes();
+        stall.write(&buf)?;
+
+        Ok(stall)
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
@@ -159,7 +232,19 @@ impl Selector {
         token: crate::Token,
         interests: crate::Interest,
     ) -> io::Result<()> {
+
+        // we stall the select and wake it up so that it can process
+        // the new subscriptions
+        let _stall = self.stall()?;
+
         let mut subscriptions = self.subscriptions.lock().unwrap();
+
+        log::trace!(
+            "select::register: fd={:?}, token={:?}, interests={:?}",
+            fd,
+            token,
+            interests
+        );
 
         if interests.is_writable() {
             let subscription = wasi::Subscription {
@@ -201,12 +286,28 @@ impl Selector {
         token: crate::Token,
         interests: crate::Interest,
     ) -> io::Result<()> {
+        log::trace!(
+            "select::reregister: fd={:?}, token={:?}, interests={:?}",
+            fd,
+            token,
+            interests
+        );
+
         self.deregister(fd)
             .and_then(|()| self.register(fd, token, interests))
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn deregister(&self, fd: wasi::Fd) -> io::Result<()> {
+        log::trace!(
+            "select::deregister: fd={:?}",
+            fd,
+        );
+
+        // we stall the select and wake it up so that it can process
+        // the new subscriptions
+        let _stall = self.stall()?;
+
         let mut subscriptions = self.subscriptions.lock().unwrap();
 
         let predicate = |subscription: &wasi::Subscription| {
