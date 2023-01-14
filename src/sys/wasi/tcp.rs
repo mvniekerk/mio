@@ -61,7 +61,7 @@ pub(crate) fn accept(listener: &net::TcpListener) -> io::Result<(net::TcpStream,
     let (socket, addr) = unsafe {
         wasi::sock_accept(
             listener.as_raw_fd() as u32,
-            0
+            wasi::FDFLAGS_NONBLOCK
         ).map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
     };
 
