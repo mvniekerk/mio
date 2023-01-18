@@ -20,11 +20,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(target_vendor = "wasmer")]
 use ::wasix as wasi;
+use std::sync::Condvar;
 
 use std::fs::File;
 use std::os::wasi::io::FromRawFd;
 use std::convert::TryInto;
 use std::io::Write;
+use std::ops::{Deref, DerefMut};
 
 #[cfg(all(feature = "net", target_vendor = "unknown"))]
 use crate::{Interest, Token};
@@ -59,6 +61,129 @@ cfg_os_poll! {
     }
 }
 
+/// Internal state that the polling loop uses
+struct SelectorState {
+    /// Subscriptions (reads events) we're interested in.
+    subscriptions: Vec<wasi::Subscription>,
+    /// This file is used to wake up the poll selector
+    /// and stall it while management actions are taken
+    /// (like adding new subscriptions)
+    stall: File,
+    /// Number of times that the loop has ticked
+    /// (resets to zero when the select exits, will wake threads
+    ///  when the number changes)
+    loop_cnt: u64,
+}
+
+impl SelectorState {
+    fn remove_fd(&mut self, fd: wasi::Fd) {
+        let predicate = |subscription: &wasi::Subscription| {
+            // Safety: `subscription.u.tag` defines the type of the union in
+            // `subscription.u.u`.
+            match subscription.u.tag {
+                t if t == wasi::EVENTTYPE_FD_WRITE.raw() => unsafe {
+                    subscription.u.u.fd_write.file_descriptor == fd
+                },
+                t if t == wasi::EVENTTYPE_FD_READ.raw() => unsafe {
+                    subscription.u.u.fd_read.file_descriptor == fd
+                },
+                _ => false,
+            }
+        };    
+        while let Some(index) = self.subscriptions.iter().position(predicate) {
+            self.subscriptions.swap_remove(index);
+        }
+    }
+    fn add_fd(
+        &mut self, 
+        fd: wasi::Fd,
+        token: crate::Token,
+        interests: crate::Interest
+    )
+    {
+        if interests.is_writable() {
+            let subscription = wasi::Subscription {
+                userdata: token.0 as wasi::Userdata,
+                u: wasi::SubscriptionU {
+                    tag: wasi::EVENTTYPE_FD_WRITE.raw(),
+                    u: wasi::SubscriptionUU {
+                        fd_write: wasi::SubscriptionFdReadwrite {
+                            file_descriptor: fd,
+                        },
+                    },
+                },
+            };
+            self.subscriptions.push(subscription);
+        }
+
+        if interests.is_readable() {
+            let subscription = wasi::Subscription {
+                userdata: token.0 as wasi::Userdata,
+                u: wasi::SubscriptionU {
+                    tag: wasi::EVENTTYPE_FD_READ.raw(),
+                    u: wasi::SubscriptionUU {
+                        fd_read: wasi::SubscriptionFdReadwrite {
+                            file_descriptor: fd,
+                        },
+                    },
+                },
+            };
+            self.subscriptions.push(subscription);
+        }
+    }
+}
+
+struct SelectorStall<'a> {
+    guard: Option<std::sync::MutexGuard<'a, SelectorState>>,
+    condvar: &'a Condvar,
+}
+impl<'a> SelectorStall<'a>
+{
+    fn new(selector: &'a Selector) -> Self {
+        Self {
+            guard: Some(selector.state.0.lock().unwrap()),
+            condvar: &selector.state.1
+        }
+    }
+}
+impl<'a> Drop
+for SelectorStall<'a> {
+    fn drop(&mut self) {
+        if let Some(mut guard) = self.guard.take() {
+            let start = guard.loop_cnt;
+            // if the select is not running then we don't need to wait
+            if start == 0 {
+                return;
+            }
+            // the select must increment the loop cnt so we know that
+            // it has changed what it is polling for - otherwise the
+            // select might return a FD that is gone or it could
+            // miss a critical wake up event
+            while guard.loop_cnt == start {
+                let buf: [u8; 8] = 1u64.to_ne_bytes();
+                guard.stall.write(&buf).ok();
+
+                guard = self.condvar.wait(guard).unwrap();
+            }
+        }
+    }
+}
+impl<'a> Deref
+for SelectorStall<'a>
+{
+    type Target = SelectorState;
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().unwrap().deref()
+    }
+}
+impl<'a> DerefMut
+for SelectorStall<'a>
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_mut().unwrap().deref_mut()
+    }
+}
+
 /// Unique id for use as `SelectorId`.
 #[cfg(all(debug_assertions, feature = "net"))]
 static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -66,14 +191,10 @@ static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 pub struct Selector {
     #[cfg(all(debug_assertions, feature = "net"))]
     id: usize,
-    /// Subscriptions (reads events) we're interested in.
-    subscriptions: Arc<Mutex<Vec<wasi::Subscription>>>,
     #[cfg(debug_assertions)]
     has_waker: std::sync::atomic::AtomicBool,
-    /// This file is used to wake up the poll selector
-    /// and stall it while management actions are taken
-    /// (like adding new subscriptions)
-    stall: Arc<Mutex<File>>,
+    /// The state machine used by the select call
+    state: Arc<(Mutex<SelectorState>, Condvar)>,
 }
 
 impl fmt::Debug
@@ -115,13 +236,19 @@ impl Selector {
                 },
             }
         ];
+
         Ok(Selector {
             #[cfg(all(debug_assertions, feature = "net"))]
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            subscriptions: Arc::new(Mutex::new(subscriptions)),
+            state: Arc::new((Mutex::new(SelectorState {
+                    subscriptions,
+                    stall: file,
+                    loop_cnt: 0,
+                }),
+                Condvar::new()
+            )),
             #[cfg(debug_assertions)]
             has_waker: std::sync::atomic::AtomicBool::new(false),
-            stall: Arc::new(Mutex::new(file)),
         })
     }
 
@@ -130,11 +257,10 @@ impl Selector {
             Selector {
                 #[cfg(all(debug_assertions, feature = "net"))]
                 id: self.id,
-                subscriptions: Arc::clone(&self.subscriptions),
+                state: Arc::clone(&self.state),
                 #[cfg(debug_assertions)]
                 has_waker: std::sync::atomic::AtomicBool::new(self.has_waker.load(
                     std::sync::atomic::Ordering::Acquire)),
-                stall: self.stall.clone(),
             }
         )
     }
@@ -147,17 +273,19 @@ impl Selector {
     pub fn select(&self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
         events.clear();
 
+        let mut loop_cnt = 1u64;
         loop
         {
-            {
-                let stall = self.stall.lock().unwrap();
-                drop(stall);
-            }
-
-            let mut subscriptions = self.subscriptions.lock().unwrap();
-
             // If we want to a use a timeout in the `wasi_poll_oneoff()` function
             // we need another subscription to the list.
+            let mut subscriptions = {
+                let mut state = self.state.0.lock().unwrap();
+                state.subscriptions.retain(|sub| sub.u.tag != wasi::EVENTTYPE_CLOCK.raw());
+                state.loop_cnt = loop_cnt;
+                loop_cnt += 1;
+                self.state.1.notify_all();
+                state.subscriptions.clone()
+            };
             if let Some(timeout) = timeout {
                 subscriptions.push(timeout_subscription(timeout));
             }
@@ -168,45 +296,42 @@ impl Selector {
 
             debug_assert!(events.capacity() >= length);
 
-            let res = unsafe { wasi::poll_oneoff(subscriptions.as_ptr(), events.as_mut_ptr(), length) };
+            let res = unsafe {
+                // Safety: `poll_oneoff` initialises the `events` for us.
+                let res = wasi::poll_oneoff(subscriptions.as_ptr(), events.as_mut_ptr(), length);
+                if let Ok(n_events) = res.as_ref() {
+                    events.set_len(*n_events);
+                } else {
+                    events.set_len(0);
+                }
+                res
+            };
 
             // If this is a stall event
-            if let Ok(n_events) = res {
-                if n_events == 1 {
-                    unsafe { events.set_len(1) };
-                    let evt = events[0];
-                    if evt.userdata == u64::MAX {
-                        // We release the lock and allow any stalled events to add new subscriptions
-                        // (without triggering the poll itself)
+            if let Ok(n_events) = res.as_ref() {
+                if *n_events == 1 {
+                    if is_stall_event(&events[0]) {
                         continue;
                     }
                 }
             }
 
-            // Remove the timeout subscription we possibly added above.
-            if timeout.is_some() {
-                let timeout_sub = subscriptions.pop();
-                debug_assert_eq!(
-                    timeout_sub.unwrap().u.tag,
-                    wasi::EVENTTYPE_CLOCK.raw(),
-                    "failed to remove timeout subscription"
-                );
+            // Clear the run count and notify waiters
+            {
+                let mut state = self.state.0.lock().unwrap();
+                state.loop_cnt = 0;
+                self.state.1.notify_all();
             }
 
-            drop(subscriptions); // Unlock.
-
+            // Return the result
             return match res {
-                Ok(n_events) => {
-                    // Safety: `poll_oneoff` initialises the `events` for us.
-                    unsafe { events.set_len(n_events) };
-
-                    // Remove the timeout event.
-                    if timeout.is_some() {
-                        if let Some(index) = events.iter().position(is_timeout_event) {
-                            events.swap_remove(index);
-                        }
+                Ok(_) => {
+                    // Remove the timeout or stall events.
+                    while let Some(index) = events.iter().position(is_internal_event) {
+                        events.swap_remove(index);
                     }
 
+                    // Return the events
                     check_errors(&events)
                 }
                 Err(err) => Err(io_err(err)),
@@ -214,15 +339,8 @@ impl Selector {
         }
     }
 
-    fn stall<'a>(&'a self) -> io::Result<std::sync::MutexGuard<'a, File>> {
-        // we stall the select and wake it up so that it can process
-        // the new subscriptions
-        let mut stall = self.stall.lock().unwrap();
-
-        let buf: [u8; 8] = 1u64.to_ne_bytes();
-        stall.write(&buf)?;
-
-        Ok(stall)
+    fn stall<'a>(&'a self) -> SelectorStall<'a> {
+        SelectorStall::new(self)
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
@@ -233,12 +351,6 @@ impl Selector {
         interests: crate::Interest,
     ) -> io::Result<()> {
 
-        // we stall the select and wake it up so that it can process
-        // the new subscriptions
-        let _stall = self.stall()?;
-
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-
         log::trace!(
             "select::register: fd={:?}, token={:?}, interests={:?}",
             fd,
@@ -246,36 +358,10 @@ impl Selector {
             interests
         );
 
-        if interests.is_writable() {
-            let subscription = wasi::Subscription {
-                userdata: token.0 as wasi::Userdata,
-                u: wasi::SubscriptionU {
-                    tag: wasi::EVENTTYPE_FD_WRITE.raw(),
-                    u: wasi::SubscriptionUU {
-                        fd_write: wasi::SubscriptionFdReadwrite {
-                            file_descriptor: fd,
-                        },
-                    },
-                },
-            };
-            subscriptions.push(subscription);
-        }
-
-        if interests.is_readable() {
-            let subscription = wasi::Subscription {
-                userdata: token.0 as wasi::Userdata,
-                u: wasi::SubscriptionU {
-                    tag: wasi::EVENTTYPE_FD_READ.raw(),
-                    u: wasi::SubscriptionUU {
-                        fd_read: wasi::SubscriptionFdReadwrite {
-                            file_descriptor: fd,
-                        },
-                    },
-                },
-            };
-            subscriptions.push(subscription);
-        }
-
+        // we stall the select and wake it up so that it can process
+        // the new subscriptions
+        let mut stall = self.stall();
+        stall.add_fd(fd, token, interests);
         Ok(())
     }
 
@@ -304,34 +390,13 @@ impl Selector {
             fd,
         );
 
-        // we stall the select and wake it up so that it can process
-        // the new subscriptions
-        let _stall = self.stall()?;
-
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-
-        let predicate = |subscription: &wasi::Subscription| {
-            // Safety: `subscription.u.tag` defines the type of the union in
-            // `subscription.u.u`.
-            match subscription.u.tag {
-                t if t == wasi::EVENTTYPE_FD_WRITE.raw() => unsafe {
-                    subscription.u.u.fd_write.file_descriptor == fd
-                },
-                t if t == wasi::EVENTTYPE_FD_READ.raw() => unsafe {
-                    subscription.u.u.fd_read.file_descriptor == fd
-                },
-                _ => false,
-            }
-        };
-
-        let mut ret = Err(io::ErrorKind::NotFound.into());
-
-        while let Some(index) = subscriptions.iter().position(predicate) {
-            subscriptions.swap_remove(index);
-            ret = Ok(())
+        {
+            // we stall the select and wake it up so that it can process
+            // the removed subscriptions
+            let mut stall = self.stall();
+            stall.remove_fd(fd);
         }
-
-        ret
+        Ok(())
     }
 
     #[cfg(debug_assertions)]
@@ -369,6 +434,14 @@ fn timeout_subscription(timeout: Duration) -> wasi::Subscription {
 
 fn is_timeout_event(event: &wasi::Event) -> bool {
     event.type_ == wasi::EVENTTYPE_CLOCK && event.userdata == TIMEOUT_TOKEN
+}
+
+fn is_stall_event(event: &wasi::Event) -> bool {
+    event.userdata == TIMEOUT_TOKEN
+}
+
+fn is_internal_event(event: &wasi::Event) -> bool {
+    is_timeout_event(event) || is_stall_event(event)
 }
 
 /// Check all events for possible errors, it returns the first error found.
