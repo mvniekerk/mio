@@ -232,11 +232,24 @@ impl Selector {
         token: crate::Token,
         interests: crate::Interest,
     ) -> io::Result<()> {
+        if interests.is_of_interest() == false {
+            return Ok(());
+        }
 
         // we stall the select and wake it up so that it can process
         // the new subscriptions
         let _stall = self.stall()?;
 
+        register_internal(fd, token, interests)
+    }
+
+    #[cfg(any(feature = "net", feature = "os-poll"))]
+    pub fn register_internal(
+        &self,
+        fd: wasi::Fd,
+        token: crate::Token,
+        interests: crate::Interest,
+    ) -> io::Result<()> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
 
         log::trace!(
@@ -280,12 +293,48 @@ impl Selector {
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
+    fn is_registered_correctly(
+        &self,
+        fd: wasi::Fd,
+        interests: crate::Interest
+    ) -> bool {
+        let predicate_readable = |subscription: &wasi::Subscription| {
+            match subscription.u.tag {
+                t if t == wasi::EVENTTYPE_FD_READ.raw() => unsafe {
+                    subscription.u.u.fd_read.file_descriptor == fd
+                },
+                _ => false,
+            }
+        };
+        let predicate_writable = |subscription: &wasi::Subscription| {
+            match subscription.u.tag {
+                t if t == wasi::EVENTTYPE_FD_WRITE.raw() => unsafe {
+                    subscription.u.u.fd_write.file_descriptor == fd
+                },
+                _ => false,
+            }
+        };
+
+        let subscriptions = self.subscriptions.lock().unwrap();
+        let is_readable = subscriptions.iter().any(predicate_readable);
+        let is_writable = subscriptions.iter().any(predicate_writable);
+
+        return is_readable == interests.is_readable() &&
+               is_writable == interests.is_writable();
+    }
+
+    #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn reregister(
         &self,
         fd: wasi::Fd,
         token: crate::Token,
         interests: crate::Interest,
     ) -> io::Result<()> {
+
+        if self.is_registered_correctly(fd, interests) {
+            return Ok(())
+        }
+
         log::trace!(
             "select::reregister: fd={:?}, token={:?}, interests={:?}",
             fd,
@@ -293,12 +342,23 @@ impl Selector {
             interests
         );
 
-        self.deregister(fd)
-            .and_then(|()| self.register(fd, token, interests))
+        let _stall = self.stall()?;
+
+        self.deregister_internal(fd)
+            .and_then(|()| self.register_internal(fd, token, interests))
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn deregister(&self, fd: wasi::Fd) -> io::Result<()> {
+        // we stall the select and wake it up so that it can process
+        // the new subscriptions
+        let _stall = self.stall()?;
+
+        self.deregister_internal(fd)
+    }
+
+    #[cfg(any(feature = "net", feature = "os-poll"))]
+    fn deregister_internal(&self, fd: wasi::Fd) -> io::Result<()> {
         log::trace!(
             "select::deregister: fd={:?}",
             fd,
@@ -409,6 +469,10 @@ pub(crate) mod event {
 
     pub(crate) fn is_writable(event: &Event) -> bool {
         event.type_ == wasi::EVENTTYPE_FD_WRITE
+    }
+
+    pub(crate) fn is_of_interest(event: &Event) -> bool {
+        self.is_readable() || self.is_writable()
     }
 
     pub(crate) fn is_error(_: &Event) -> bool {
