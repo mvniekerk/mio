@@ -145,6 +145,13 @@ impl<'a> SelectorStall<'a>
             condvar: &selector.state.1
         }
     }
+
+    fn new_from_guard(selector: &'a Selector, guard: std::sync::MutexGuard<'a, SelectorState>) -> Self {
+        Self {
+            guard: Some(guard),
+            condvar: &selector.state.1
+        }
+    }
 }
 impl<'a> Drop
 for SelectorStall<'a> {
@@ -343,6 +350,10 @@ impl Selector {
         SelectorStall::new(self)
     }
 
+    fn stall_from_guard<'a>(&'a self, guard: std::sync::MutexGuard<'a, SelectorState>) -> SelectorStall<'a> {
+        SelectorStall::new_from_guard(self, guard)
+    }
+
     #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn register(
         &self,
@@ -350,26 +361,23 @@ impl Selector {
         token: crate::Token,
         interests: crate::Interest,
     ) -> io::Result<()> {
-        if interests.is_of_interest() == false {
+        if interests.is_readable() == false && interests.is_writable() == false {
             return Ok(());
         }
 
         // we stall the select and wake it up so that it can process
         // the new subscriptions
-        let _stall = self.stall()?;
-
-        register_internal(fd, token, interests)
+        let mut stall = self.stall();
+        Self::register_internal(&mut stall, fd, token, interests)
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
-    pub fn register_internal(
-        &self,
+    fn register_internal<'a>(
+        stall: &mut SelectorStall<'a>,
         fd: wasi::Fd,
         token: crate::Token,
         interests: crate::Interest,
     ) -> io::Result<()> {
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-
         log::trace!(
             "select::register: fd={:?}, token={:?}, interests={:?}",
             fd,
@@ -379,14 +387,13 @@ impl Selector {
 
         // we stall the select and wake it up so that it can process
         // the new subscriptions
-        let mut stall = self.stall();
         stall.add_fd(fd, token, interests);
         Ok(())
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
-    fn is_registered_correctly(
-        &self,
+    fn is_registered_correctly<'a>(
+        state: &std::sync::MutexGuard<'a, SelectorState>,
         fd: wasi::Fd,
         interests: crate::Interest
     ) -> bool {
@@ -407,9 +414,8 @@ impl Selector {
             }
         };
 
-        let subscriptions = self.subscriptions.lock().unwrap();
-        let is_readable = subscriptions.iter().any(predicate_readable);
-        let is_writable = subscriptions.iter().any(predicate_writable);
+        let is_readable = state.subscriptions.iter().any(predicate_readable);
+        let is_writable = state.subscriptions.iter().any(predicate_writable);
 
         return is_readable == interests.is_readable() &&
                is_writable == interests.is_writable();
@@ -423,7 +429,8 @@ impl Selector {
         interests: crate::Interest,
     ) -> io::Result<()> {
 
-        if self.is_registered_correctly(fd, interests) {
+        let state = self.state.0.lock().unwrap();
+        if Self::is_registered_correctly(&state, fd, interests) {
             return Ok(())
         }
 
@@ -434,34 +441,29 @@ impl Selector {
             interests
         );
 
-        let _stall = self.stall()?;
-
-        self.deregister_internal(fd)
-            .and_then(|()| self.register_internal(fd, token, interests))
+        let mut stall = self.stall_from_guard(state);
+        Self::deregister_internal(&mut stall, fd)
+            .and_then(|()| Self::register_internal(&mut stall, fd, token, interests))
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
     pub fn deregister(&self, fd: wasi::Fd) -> io::Result<()> {
         // we stall the select and wake it up so that it can process
         // the new subscriptions
-        let _stall = self.stall()?;
-
-        self.deregister_internal(fd)
+        let mut stall = self.stall();
+        Self::deregister_internal(&mut stall, fd)
     }
 
     #[cfg(any(feature = "net", feature = "os-poll"))]
-    fn deregister_internal(&self, fd: wasi::Fd) -> io::Result<()> {
+    fn deregister_internal<'a>(stall: &mut SelectorStall<'a>, fd: wasi::Fd) -> io::Result<()> {
         log::trace!(
             "select::deregister: fd={:?}",
             fd,
         );
 
-        {
-            // we stall the select and wake it up so that it can process
-            // the removed subscriptions
-            let mut stall = self.stall();
-            stall.remove_fd(fd);
-        }
+        // we stall the select and wake it up so that it can process
+        // the removed subscriptions
+        stall.remove_fd(fd);
         Ok(())
     }
 
@@ -548,10 +550,6 @@ pub(crate) mod event {
 
     pub(crate) fn is_writable(event: &Event) -> bool {
         event.type_ == wasi::EVENTTYPE_FD_WRITE
-    }
-
-    pub(crate) fn is_of_interest(event: &Event) -> bool {
-        self.is_readable() || self.is_writable()
     }
 
     pub(crate) fn is_error(_: &Event) -> bool {
