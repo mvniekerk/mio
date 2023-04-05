@@ -296,6 +296,8 @@ impl Selector {
             if let Some(timeout) = timeout {
                 if timeout > Duration::ZERO {
                     subscriptions.push(timeout_subscription(timeout));
+                } else {
+                    subscriptions.push(timeout_subscription_nanos(1));
                 }
             } else {
                 subscriptions.push(timeout_subscription(Duration::ZERO));
@@ -482,6 +484,10 @@ const TIMEOUT_TOKEN: wasi::Userdata = wasi::Userdata::max_value();
 
 /// Returns a `wasi::Subscription` for `timeout`.
 fn timeout_subscription(timeout: Duration) -> wasi::Subscription {
+    timeout_subscription_nanos(timeout.as_nanos())
+}
+
+fn timeout_subscription_nanos(timeout: u128) -> wasi::Subscription {
     wasi::Subscription {
         userdata: TIMEOUT_TOKEN,
         u: wasi::SubscriptionU {
@@ -490,7 +496,7 @@ fn timeout_subscription(timeout: Duration) -> wasi::Subscription {
                 clock: wasi::SubscriptionClock {
                     id: wasi::CLOCKID_MONOTONIC,
                     // Timestamp is in nanoseconds.
-                    timeout: min(wasi::Timestamp::MAX as u128, timeout.as_nanos())
+                    timeout: min(wasi::Timestamp::MAX as u128, timeout)
                         as wasi::Timestamp,
                     // Give the implementation another millisecond to coalesce
                     // events.
