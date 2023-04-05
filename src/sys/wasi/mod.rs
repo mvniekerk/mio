@@ -294,7 +294,11 @@ impl Selector {
                 state.subscriptions.clone()
             };
             if let Some(timeout) = timeout {
-                subscriptions.push(timeout_subscription(timeout));
+                if timeout > Duration::ZERO {
+                    subscriptions.push(timeout_subscription(timeout));
+                }
+            } else {
+                subscriptions.push(timeout_subscription(0));
             }
 
             // `poll_oneoff` needs the same number of events as subscriptions.
