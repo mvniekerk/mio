@@ -298,7 +298,7 @@ impl Selector {
                     subscriptions.push(timeout_subscription(timeout));
                 }
             } else {
-                subscriptions.push(timeout_subscription(0));
+                subscriptions.push(timeout_subscription(Duration::ZERO));
             }
 
             // `poll_oneoff` needs the same number of events as subscriptions.
