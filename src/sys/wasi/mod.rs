@@ -320,15 +320,6 @@ impl Selector {
                 res
             };
 
-            // If this is a stall event
-            if let Ok(n_events) = res.as_ref() {
-                if *n_events == 1 {
-                    if is_stall_event(&events[0]) {
-                        continue;
-                    }
-                }
-            }
-
             // Clear the run count and notify waiters
             {
                 let mut state = self.state.0.lock().unwrap();
@@ -339,8 +330,8 @@ impl Selector {
             // Return the result
             return match res {
                 Ok(_) => {
-                    // Remove the timeout or stall events.
-                    while let Some(index) = events.iter().position(is_internal_event) {
+                    // Remove the timeout.
+                    while let Some(index) = events.iter().position(is_timeout_event) {
                         events.swap_remove(index);
                     }
 
@@ -512,14 +503,6 @@ fn timeout_subscription_nanos(timeout: u128) -> wasi::Subscription {
 
 fn is_timeout_event(event: &wasi::Event) -> bool {
     event.type_ == wasi::EVENTTYPE_CLOCK && event.userdata == TIMEOUT_TOKEN
-}
-
-fn is_stall_event(event: &wasi::Event) -> bool {
-    event.userdata == TIMEOUT_TOKEN
-}
-
-fn is_internal_event(event: &wasi::Event) -> bool {
-    is_timeout_event(event) || is_stall_event(event)
 }
 
 /// Check all events for possible errors, it returns the first error found.
