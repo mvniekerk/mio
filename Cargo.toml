@@ -42,9 +42,6 @@ os-ext = [
 # Enables `mio::net` module containing networking primitives.
 net = []
 
-[dependencies]
-log = "0.4.8"
-
 [target.'cfg(unix)'.dependencies]
 libc = { git = "https://github.com/john-sharratt/libc.git" }
 
@@ -62,10 +59,13 @@ features = [
 wasi = { version = "^0.11" }
 
 [target.'cfg(all(target_os = "wasi", target_vendor = "wasmer"))'.dependencies]
-wasix = { git = "https://github.com/john-sharratt/wasix.git" }
+wasix = { version = "0.12" }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
 libc = { git = "https://github.com/john-sharratt/libc.git" }
+
+[dependencies]
+log = "0.4"
 
 [dev-dependencies]
 env_logger = { version = "0.8.4", default-features = false }
