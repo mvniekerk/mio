@@ -508,7 +508,7 @@ fn is_timeout_event(event: &wasi::Event) -> bool {
 /// Check all events for possible errors, it returns the first error found.
 fn check_errors(events: &[Event]) -> io::Result<()> {
     for event in events {
-        if event.error != wasi::ERRNO_SUCCESS {
+        if event.error.raw() != wasi::ERRNO_SUCCESS.raw() {
             return Err(io_err(event.error));
         }
     }

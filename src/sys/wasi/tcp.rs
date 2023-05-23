@@ -59,7 +59,7 @@ pub(crate) fn set_reuseaddr(socket: &net::TcpListener, reuseaddr: bool) -> io::R
 
 pub(crate) fn accept(listener: &net::TcpListener) -> io::Result<(net::TcpStream, SocketAddr)> {
     let (socket, addr) = unsafe {
-        wasi::sock_accept2(
+        wasi::sock_accept_v2(
             listener.as_raw_fd() as u32,
             wasi::FDFLAGS_NONBLOCK
         ).map_err(|errno| io::Error::from_raw_os_error(errno.raw() as i32))?
