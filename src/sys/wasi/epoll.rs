@@ -205,7 +205,7 @@ pub(crate) mod event {
     }
 
     pub(crate) fn is_writable(event: &Event) -> bool {
-        (event.events & wasi::EPOLL_TYPE_EPOLLIN) != 0
+        (event.events & wasi::EPOLL_TYPE_EPOLLOUT) != 0
     }
 
     pub(crate) fn is_error(event: &Event) -> bool {
