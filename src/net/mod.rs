@@ -33,7 +33,7 @@ mod udp;
 #[cfg(not(all(target_os = "wasi", target_vendor = "unknown")))]
 pub use self::udp::UdpSocket;
 
-#[cfg(unix)]
+#[cfg(any(unix, all(target_os = "wasi", target_vendor = "wasmer")))]
 mod uds;
-#[cfg(unix)]
+#[cfg(any(unix, all(target_os = "wasi", target_vendor = "wasmer")))]
 pub use self::uds::{SocketAddr, UnixDatagram, UnixListener, UnixStream};

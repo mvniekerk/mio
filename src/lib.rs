@@ -73,11 +73,11 @@ pub use interest::Interest;
 pub use poll::{Poll, Registry};
 pub use token::Token;
 
-mod wasi {
-    #[cfg(all(target_os = "wasi", target_vendor = "unknown"))]
-    pub use ::wasi::*;
+pub mod wasi {
+    //! WASI only extensions.
+
     #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
-    pub use ::wasix::*;
+    pub use crate::sys::SourceFd;
 }
 
 cfg_os_poll! {

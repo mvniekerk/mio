@@ -18,6 +18,18 @@ use std::io;
 #[cfg(all(feature = "net", target_vendor = "unknown"))]
 use crate::{Interest, Token};
 
+#[allow(unused_macros)]
+macro_rules! syscall {
+    ($fn: ident ( $($arg: expr),* $(,)* ) ) => {{
+        let res = unsafe { libc::$fn($($arg, )*) };
+        if res == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(res)
+        }
+    }};
+}
+
 #[cfg(target_vendor = "unknown")]
 cfg_net! {
     pub(crate) mod tcp {
@@ -52,6 +64,8 @@ cfg_os_poll! {
         pub(crate) mod tcp;
         pub(crate) mod udp;
         pub(crate) mod pipe;
+        pub(crate) mod uds;
+        pub use self::uds::SocketAddr;
     }
 }
 
