@@ -1,4 +1,5 @@
 use crate::{Interest, Token};
+use std::fmt::Debug;
 use std::mem::{self, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -367,6 +368,12 @@ impl DerefMut for Events {
 // field is through `fn token(event: &Event)` which cannot mutate the field.
 unsafe impl Send for Events {}
 unsafe impl Sync for Events {}
+
+impl Debug for Events{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Events").finish()
+    }
+}
 
 pub mod event {
     use std::fmt;
