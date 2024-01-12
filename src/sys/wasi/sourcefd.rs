@@ -3,6 +3,8 @@ use crate::{event, Interest, Registry, Token};
 use std::io;
 use std::os::wasi::io::RawFd;
 
+/// Adapter for [`RawFd`] providing an [`event::Source`] implementation.
+///
 #[derive(Debug)]
 pub struct SourceFd<'a>(pub &'a RawFd);
 

@@ -68,6 +68,9 @@ cfg_os_poll! {
 cfg_os_poll! {
     mod wasi;
     pub(crate) use self::wasi::*;
+
+    #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
+    pub use self::wasi::SourceFd;
 }
 
 cfg_not_os_poll! {

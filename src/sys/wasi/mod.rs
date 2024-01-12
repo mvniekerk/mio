@@ -13,6 +13,7 @@
 //!
 //! In summary, this only (barely) works using a single thread.
 
+#[allow(unused)]
 use std::io;
 
 #[cfg(all(feature = "net", target_vendor = "unknown"))]
@@ -35,6 +36,7 @@ cfg_net! {
 #[cfg(target_vendor = "wasmer")]
 cfg_os_poll! {
     pub(crate) mod sourcefd;
+    #[allow(unused)]
     pub use self::sourcefd::SourceFd;
     
     pub(crate) mod waker;

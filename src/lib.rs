@@ -86,11 +86,11 @@ cfg_os_poll! {
     pub use waker::Waker;
 }
 
-#[cfg(all(unix, feature = "os-ext"))]
-#[cfg_attr(docsrs, doc(cfg(all(unix, feature = "os-ext"))))]
+#[cfg(all(any(unix, target_vendor = "wasmer"), feature = "os-ext"))]
+#[cfg_attr(docsrs, doc(cfg(all(any(unix, target_vendor = "wasmer"), feature = "os-ext"))))]
 pub mod unix {
     //! Unix only extensions.
-
+    #[cfg(unix)]
     pub mod pipe {
         //! Unix pipe.
         //!
@@ -99,6 +99,7 @@ pub mod unix {
         pub use crate::sys::pipe::{new, Receiver, Sender};
     }
 
+    #[allow(unused)]
     pub use crate::sys::SourceFd;
 }
 
