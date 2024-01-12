@@ -71,6 +71,10 @@ cfg_os_poll! {
 
     #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
     pub use self::wasi::SourceFd;
+
+    #[allow(unused_imports)]
+    #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
+    pub use std::net::SocketAddr;
 }
 
 cfg_not_os_poll! {
@@ -82,10 +86,9 @@ cfg_not_os_poll! {
         mod wasi;
         pub use self::wasi::SourceFd;
     }
+    #[allow(unused_imports)]
     #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
-    cfg_net! {
-        pub use self::wasi::SocketAddr;
-    }
+    pub use std::net::SocketAddr;
 
     #[cfg(unix)]
     cfg_any_os_ext! {
