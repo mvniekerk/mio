@@ -692,8 +692,9 @@ impl Registry {
     #[allow(dead_code)]
     #[cfg(all(debug_assertions))]
     pub fn register_waker(&self) {
+        #[cfg(all(debug_assertions, not(target_os = "wasi")))]
         assert!(
-            !self.has_waker.swap(true, Ordering::AcqRel),
+            !self.has_waker.swap(true, std::sync::atomic::Ordering::AcqRel),
             "Only a single `Waker` can be active per `Poll` instance"
         );
     }

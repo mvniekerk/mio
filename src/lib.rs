@@ -74,8 +74,10 @@ pub use poll::{Poll, Registry};
 pub use token::Token;
 
 mod wasi {
+    #[allow(unused)]
     #[cfg(all(target_os = "wasi", target_vendor = "unknown"))]
     pub use ::wasi::*;
+    #[allow(unused)]
     #[cfg(all(target_os = "wasi", target_vendor = "wasmer"))]
     pub use ::wasix::*;
 }

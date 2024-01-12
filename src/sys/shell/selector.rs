@@ -19,6 +19,7 @@ impl Selector {
         os_required!();
     }
 
+    #[allow(dead_code)]
     #[cfg(all(debug_assertions))]
     pub fn register_waker(&self) -> bool {
         os_required!();
