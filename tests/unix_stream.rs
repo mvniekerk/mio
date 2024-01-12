@@ -78,6 +78,48 @@ fn unix_stream_connect() {
 }
 
 #[test]
+fn unix_stream_connect_addr() {
+    let (mut poll, mut events) = init_with_poll();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let path = temp_file("unix_stream_connect_addr");
+    let listener = net::UnixListener::bind(path.clone()).unwrap();
+    let mio_listener = mio::net::UnixListener::from_std(listener);
+
+    let local_addr = mio_listener.local_addr().unwrap();
+    let mut stream = UnixStream::connect_addr(&local_addr).unwrap();
+
+    let barrier_clone = barrier.clone();
+    let handle = thread::spawn(move || {
+        let (stream, _) = mio_listener.accept().unwrap();
+        barrier_clone.wait();
+        drop(stream);
+    });
+
+    poll.registry()
+        .register(
+            &mut stream,
+            TOKEN_1,
+            Interest::READABLE | Interest::WRITABLE,
+        )
+        .unwrap();
+    expect_events(
+        &mut poll,
+        &mut events,
+        vec![ExpectEvent::new(TOKEN_1, Interest::WRITABLE)],
+    );
+
+    barrier.wait();
+    expect_events(
+        &mut poll,
+        &mut events,
+        vec![ExpectEvent::new(TOKEN_1, Interest::READABLE)],
+    );
+
+    handle.join().unwrap();
+}
+
+#[test]
 fn unix_stream_from_std() {
     smoke_test(
         |path| {
@@ -450,6 +492,8 @@ where
     expect_read!(stream.read(&mut buf), DATA1);
 
     assert!(stream.take_error().unwrap().is_none());
+
+    assert_would_block(stream.read(&mut buf));
 
     let bufs = [IoSlice::new(DATA1), IoSlice::new(DATA2)];
     let wrote = stream.write_vectored(&bufs).unwrap();

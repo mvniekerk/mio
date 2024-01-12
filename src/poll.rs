@@ -1,8 +1,13 @@
-use crate::{event, sys, Events, Interest, Token};
-#[cfg(unix)]
+#[cfg(all(unix, not(mio_unsupported_force_poll_poll), not(target_os = "vita")))]
 use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(all(debug_assertions, not(target_os = "wasi")))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(all(debug_assertions, not(target_os = "wasi")))]
+use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, io};
+
+use crate::{event, sys, Events, Interest, Token};
 
 /// Polls for readiness events on all registered values.
 ///
@@ -252,6 +257,9 @@ pub struct Poll {
 /// Registers I/O resources.
 pub struct Registry {
     selector: sys::Selector,
+    /// Whether this selector currently has an associated waker.
+    #[cfg(all(debug_assertions, not(target_os = "wasi")))]
+    has_waker: Arc<AtomicBool>,
 }
 
 impl Poll {
@@ -298,7 +306,11 @@ impl Poll {
         /// ```
         pub fn new() -> io::Result<Poll> {
             sys::Selector::new().map(|selector| Poll {
-                registry: Registry { selector },
+                registry: Registry {
+                    selector,
+                    #[cfg(all(debug_assertions, not(target_os = "wasi")))]
+                    has_waker: Arc::new(AtomicBool::new(false)),
+                },
             })
         }
     }
@@ -411,7 +423,7 @@ impl Poll {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(mio_unsupported_force_poll_poll), not(target_os = "vita")))]
 impl AsRawFd for Poll {
     fn as_raw_fd(&self) -> RawFd {
         self.registry.as_raw_fd()
@@ -668,9 +680,11 @@ impl Registry {
     /// Event sources registered with this `Registry` will be registered with
     /// the original `Registry` and `Poll` instance.
     pub fn try_clone(&self) -> io::Result<Registry> {
-        self.selector
-            .try_clone()
-            .map(|selector| Registry { selector })
+        self.selector.try_clone().map(|selector| Registry {
+            selector,
+            #[cfg(all(debug_assertions, not(target_os = "wasi")))]
+            has_waker: Arc::clone(&self.has_waker),
+        })
     }
 
     /// Internal check to ensure only a single `Waker` is active per [`Poll`]
@@ -679,7 +693,7 @@ impl Registry {
     #[cfg(all(debug_assertions))]
     pub fn register_waker(&self) {
         assert!(
-            !self.selector.register_waker(),
+            !self.has_waker.swap(true, Ordering::AcqRel),
             "Only a single `Waker` can be active per `Poll` instance"
         );
     }
@@ -698,7 +712,7 @@ impl fmt::Debug for Registry {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(mio_unsupported_force_poll_poll), not(target_os = "vita")))]
 impl AsRawFd for Registry {
     fn as_raw_fd(&self) -> RawFd {
         self.selector.as_raw_fd()
@@ -706,7 +720,11 @@ impl AsRawFd for Registry {
 }
 
 cfg_os_poll! {
-    #[cfg(unix)]
+    #[cfg(all(
+        unix,
+        not(mio_unsupported_force_poll_poll),
+        not(target_os = "vita"),
+    ))]
     #[test]
     pub fn as_raw_fd() {
         let poll = Poll::new().unwrap();
