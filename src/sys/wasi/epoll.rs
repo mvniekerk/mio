@@ -1,6 +1,5 @@
 use crate::{Interest, Token};
 
-use log::error;
 #[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -165,6 +164,7 @@ impl Drop for Selector {
             )
             .map(|_| ())
         } {
+            #[cfg(feature = "log")]
             log::error!("error closing epoll: {}", err);
         }
     }
