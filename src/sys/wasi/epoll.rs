@@ -165,7 +165,7 @@ impl Drop for Selector {
             )
             .map(|_| ())
         } {
-            error!("error closing epoll: {}", err);
+            log::error!("error closing epoll: {}", err);
         }
     }
 }
