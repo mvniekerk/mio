@@ -56,7 +56,7 @@ features = [
 ]
 
 [target.'cfg(all(target_os = "wasi", target_vendor = "unknown"))'.dependencies]
-wasi = { version = "^0.11" }
+wasi = { version = "0.11" }
 
 [target.'cfg(all(target_os = "wasi", target_vendor = "wasmer"))'.dependencies]
 wasix = { version = "0.12" }
