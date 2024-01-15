@@ -214,6 +214,7 @@ impl Selector {
         self.id
     }
 
+    #[allow(unused_assignments)]
     pub fn select(&self, events: &mut Events, timeout: Option<Duration>) -> io::Result<()> {
         events.clear();
 
@@ -275,7 +276,7 @@ impl Selector {
                     // Return the events
                     check_errors(&events)
                 }
-                Err(err) => Err(io_err(err)),
+                Err(err) => Err(io_err(err.into())),
             };
         }
     }
@@ -446,7 +447,7 @@ fn is_timeout_event(event: &wasi::Event) -> bool {
 fn check_errors(events: &[Event]) -> io::Result<()> {
     for event in events {
         if event.error.raw() != wasi::ERRNO_SUCCESS.raw() {
-            return Err(io_err(event.error));
+            return Err(io_err(event.error.into()));
         }
     }
     Ok(())
