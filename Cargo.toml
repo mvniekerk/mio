@@ -46,7 +46,7 @@ net = []
 log = { version = "0.4.8", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = { git = "https://github.com/wasix-org/libc.git", branch = "v0.2.152" }
+libc = { git = "https://github.com/wasix-org/libc.git", branch = "wasix-0.2.155" }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.48"
@@ -65,7 +65,7 @@ wasi = { version = "^0.11" }
 wasix = { version = "0.12" }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
-libc = { git = "https://github.com/wasix-org/libc.git", branch = "v0.2.152" }
+libc = { git = "https://github.com/wasix-org/libc.git", branch = "wasix-0.2.155" }
 
 [dev-dependencies]
 env_logger = { version = "0.9.3", default-features = false }
